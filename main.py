@@ -177,20 +177,17 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True):
 
 
     # interp
-    tau = interp1d(rs1, taus1, kind="cubic")
+    tau = interp1d(rs1, taus1, kind="cubic", fill_value="extrapolate")
     tt = interp1d(taus1[tauinf_i]-taus1[:tauinf_i], rs1[:tauinf_i], fill_value="extrapolate", kind="linear")
-    rho = interp1d(rs1, rhos1, kind="cubic")
-    T = interp1d(rs1, Ts1, kind="cubic")
-    M = interp1d(rs1, Ms1, kind="cubic")
-    L = interp1d(rs1, Ls1, kind="cubic")
+    rho = interp1d(rs1, rhos1, kind="cubic", fill_value="extrapolate")
+    T = interp1d(rs1, Ts1, kind="cubic", fill_value="extrapolate")
+    M = interp1d(rs1, Ms1, kind="cubic", fill_value="extrapolate")
+    L = interp1d(rs1, Ls1, kind="cubic", fill_value="extrapolate")
 
     rsurf = tt(2/3)
     surf_i1 = np.nanargmin(np.abs(rs1-rsurf))
-    print(rsurf/Rsun)
-    print(taus1[tauinf_i] - taus1[surf_i1] - 2 / 3)
-
-    plt.plot(rs1/rsurf, taus1)
-    plt.show()
+    print("Curr surf: ", rsurf/Rsun)
+    print("tau error before interp: ", taus1[tauinf_i] - taus1[surf_i1] - 2 / 3)
 
     # rsurf = minimize(lambda x: np.abs(taus1[tauinf_i] - tau(x) -2/3), rs1[surf_i1], bounds=[(0,rs1[tauinf_i])]  )
     # print( taus1[tauinf_i] - tau(rsurf.x[0]) -2/3)
@@ -207,9 +204,7 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True):
     Ms1 = M(rs1)
     Ls1 = L(rs1)
     surf_i1 = np.nanargmin(np.abs(rs1-rsurf))
-    print(np.min(np.abs(rs1-rsurf)))
     tauinf_i = -1
-
 
     # error from luminosity condition
     frac_error1 = f(Ls1[surf_i1], rs1[surf_i1], Ts1[surf_i1])
