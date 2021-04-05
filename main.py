@@ -444,7 +444,7 @@ def main(qq):
     LLs=[]; MMs=[]; TTs=[]; RRs =[]
     rho_cs = []
     start = dt.datetime.now()
-    for i,T_c in enumerate(np.linspace(1e6, 35e6, 100)): # enumerate([8.23e6]): # brodericks star
+    for i,T_c in enumerate(np.linspace(1e6, 35e6, 50)): # enumerate([8.23e6]): # brodericks star
         print("==================== Begginging the {}th Star, Tc: {} ====================".format(i, T_c))
         r_f = 20*Rsun if T_c > 1.5e7 else 2*Rsun
 
@@ -496,7 +496,7 @@ def main(qq):
 
     fig = plt.figure()
     ax = plt.gca()
-    ax.scatter(np.array(TTs), np.array(LLs)/Lsun, "bo" )
+    ax.scatter(np.array(TTs), np.array(LLs)/Lsun, c="b" )
     ax.plot(np.array(TTs), np.array(LLs) / Lsun, 'b-')
     ax.set_yscale('log')
     ax.set_xscale('log')
@@ -518,7 +518,7 @@ def main(qq):
             emp_Ls.append(0.35*np.power(M/Msun, 2.62))
         else:
             emp_Ls.append(1.02*np.power(M/Msun,3.92))
-    plt.plot(np.array(MMs)/Msun, np.array(emp_Ls), "-", label="Empirical Fit")
+    plt.plot(np.array(emp_Ms)/Msun, np.array(emp_Ls), "-", label="Empirical Fit")
     plt.xlabel(r"$M/M_{\odot}$")
     plt.ylabel(r"$L/L_{\odot}$")
     ax = plt.gca()
@@ -537,7 +537,7 @@ def main(qq):
             emp_Rs.append(1.33*np.power(M/Msun, 0.555))
         else:
             emp_Rs.append(1.06*np.power(M/Msun,0.945))
-    plt.plot(np.array(MMs)/Msun, np.array(emp_Rs), "-", label="Empirical Fit")
+    plt.plot(np.array(emp_Ms)/Msun, np.array(emp_Rs), "-", label="Empirical Fit")
     plt.xlabel("M/Msun")
     plt.ylabel("R/Rsun")
     ax = plt.gca()
