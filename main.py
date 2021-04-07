@@ -23,7 +23,7 @@ Z = 0.016
 # Energy stuff
 mu = 1/(2*X + 0.75*Y +0.5*Z)
 Xcno = 0.03*X
-gamma = 5/3
+gamma = 5./3.
 a = 7.56e-16
 
 # The sun
@@ -42,11 +42,8 @@ hbar = 1.054571817e-34 # Js
 sb = 5.670374419e-8
 
 # (partial) boundary conditions:
-rho_c = 88363.91364833503 # roughly rho_c for the sun
-drho = 0.1*rho_c
-T_c = 1e7
-r_c = 0.0001
-r_f = 15*Rsun #1.4e9 / 1.5  # roughly 2R_sun
+r_c = 10
+r_f = 15*Rsun # This gets changed later
 
 # pressure regieme =================================
 def P(rho, T):
@@ -100,27 +97,53 @@ def kappa_H(rho, T):
     return (2.5e-32)*(Z/0.02)*np.power(rho/1e3, 0.5)*(T**9)
 
 def kappa(rho, T):
-    return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
+    try:
+        return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
+    except AttributeError:
+        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
 
 # these ones are our group specific
-
-Ti = 0.5 * T_c
-kappa_0 = 0.5 * 1e24
+# The specific Ti and kappa_0 are set below
 def kappa_i(rho, T):
-    if(T<Ti):
-        return kappa_0*(Z + 0.0001)*np.sqrt(rho/1e3)*np.power(T, -3.5)
+    global Ti
+    global kappa_0
 
-    elif(T>=Ti):
-        return 0
+    if isinstance(T, np.ndarray):
+        out = np.zeros(T.shape)
+        for i in range(out.shape[0]):
+            if(T[i]<Ti):
+                out[i] = kappa_0 * (Z + 0.0001) * np.sqrt(rho[i] / 1e3) * np.power(T[i], -3.5)
+        return out
+    else:
+        if (T < Ti):
+            return kappa_0 * (Z + 0.0001) * np.sqrt(rho / 1e3) * np.power(T, -3.5)
+
+        else:
+            return 0
+
 
 def kappa_modified(rho, T):
-    return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T), kappa_i(rho,T)], axis=0))
+    try:
+        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es * np.ones(rho.shape), kappa_ff(rho, T), kappa_i(rho, T)], axis=0))
+    except AttributeError as e:
+        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T), kappa_i(rho, T)], axis=0))
 
+def star_modified(r,y):
+    rho = y[0]
+    T = y[1]
+    M = y[2]
+    L = y[3]
+    tau = y[4]
+
+    rhodot = drhodr(rho, T, L, r, M, P(rho, T))
+    Tdot = dTdr(rho, T, L, r, M, P(rho, T))
+    Mdot = dMdr(r, rho)
+    Ldot = dLdr(rho, r, T)
+    taudot = dtaudr(rho, kappa_modified(rho, T))
+
+    return np.array([rhodot, Tdot, Mdot, Ldot, taudot])
 
 # More boundary conditions:
-M_c = (4/3)*np.pi*(r_c**3)*rho_c
-L_c = (4/3)*np.pi*(r_c**3)*rho_c*epsilon(rho_c, T_c)
-tau_c = 0
 def f(L_surf, R_surf, T_surf):
     return (L_surf - 4*np.pi*sb*(R_surf**2)*(T_surf**4))/np.sqrt( 4*np.pi*sb*(R_surf**2)*(T_surf**4)*L_surf  )
 
@@ -140,61 +163,146 @@ def star(r,y):
 
     return np.array([rhodot, Tdot, Mdot, Ldot, taudot])
 
-def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True):
 
-    # if you dont have much ram, change the stepsize to be larger
-    #rs1 = np.arange(r_c,r_f,int(r_f//5e6))
-    #rs1 = np.arange(r_c, r_f, 200)
-    #all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), atol=1e-18 ,method='RK45', t_eval=rs1 )
-    all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45', atol=1e-18 , max_step=0.0005*r_f)
 
-    rhos1 = all.y[0,:]
-    Ts1 = all.y[1,:]
-    Ms1 = all.y[2,:]
-    Ls1 = all.y[3,:]
-    taus1 = all.y[4,:]
-    rs1 = all.t
+def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, modified=False):
 
-    # take tau(inf) as the last non-nan value
-    for i in range(1, taus1.shape[0]):
-        if not np.isnan(taus1[-i]):
-            tauinf_i = -i
+    count = 0 # Counter variable
+
+    # A while loop to rerun when delta tau isnt small enough (makes a big difference!!)
+    while True:
+        # The other half of the BCs
+        M_c = (4 / 3) * np.pi * (r_c ** 3) * rho_c_trial
+        L_c = (4 / 3) * np.pi * (r_c ** 3) * rho_c_trial * epsilon(rho_c_trial, T_c)
+
+        # Use our modification
+        if not modified:
+            tau_c = dtaudr(rho_c_trial, kappa(rho_c_trial, T_c)) * r_c
+        else:
+            tau_c = dtaudr(rho_c_trial, kappa_modified(rho_c_trial, T_c)) * r_c
+
+        # Runs with a better stepsize on the final try (speeds up bisection)
+        # If it runs really slowly on your computer, try increasing the max_stepsize
+        if not final:
+            all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45', atol=1e-18 , max_step=0.01 * r_f)
+        else:
+            all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45', atol=1e-18, max_step=0.0005 * r_f)
+
+        # Variable renaming
+        rhos1 = all.y[0, :]
+        Ts1 = all.y[1, :]
+        Ms1 = all.y[2, :]
+        Ls1 = all.y[3, :]
+        taus1 = all.y[4, :]
+        rs1 = all.t
+
+        # Using our modification
+        if not modified:
+            ks = kappa(rhos1, Ts1)
+        else:
+            ks = kappa_modified(rhos1, Ts1)
+
+        # Calculate delta tau
+        drhodrs = drhodr(rhos1, Ts1, Ls1, rs1, Ms1, P(rhos1, Ts1))
+        dtau1 = ks * rhos1 * rhos1 / np.abs(drhodrs)
+
+        # take tau(inf) as the last non-nan value (done the fancy way)
+        tauinf_i = (~np.isnan(taus1)).cumsum().argmax()
+
+        count += 1
+        print("dtau: ",dtau1[(~np.isnan(dtau1)).cumsum().argmax()])
+        if dtau1[(~np.isnan(dtau1)).cumsum().argmax()] < 0.1:
             break
+        else:
+            r_f *=  2.
+
+    print("Reran for better dtau ", count)
+
+
+
+    print("tauinf at: {} tauinf: {}".format( tauinf_i/taus1.shape[0], taus1[tauinf_i]))
 
     # finds the index of the surface, tau(inf) - tau(R_Surf) = 2/3
-    surf_i1 = np.nanargmin(np.abs(taus1[tauinf_i] - taus1[:tauinf_i] - 2/3))
+    surf_i1 = np.nanargmin(np.abs(taus1[tauinf_i] - taus1[0:tauinf_i] - 2./3.))
     surf_i2 = np.nanargmin(np.abs(Ms1 - 1000*Msun))
     surf_i1 = np.nanmin((surf_i1, surf_i2))
-    #print( taus1[tauinf_i] - taus1[surf_i1] -2/3)
-    # print(tauinf_i, surf_i1, taus1.shape)
+
     tauinf = taus1[tauinf_i]
     surf_g1 = surf_i1
-    print("1: ", rs1[surf_g1] / Rsun, Ts1[surf_g1])
+    rsurf_1 = rs1[surf_g1]
 
 
-    # interp
+
+    # interpolation of varaibles (to get good answers with bad stepsizes)
     tau = interp1d(rs1, taus1, kind="cubic", fill_value="extrapolate")
-    tt = interp1d(tauinf-taus1, rs1, fill_value="extrapolate", kind="linear")
+    tt = interp1d(tauinf-taus1[0:tauinf_i], rs1[0:tauinf_i], fill_value="extrapolate", kind="linear")
     rho = interp1d(rs1, rhos1, kind="cubic", fill_value="extrapolate")
     T = interp1d(rs1, Ts1, kind="cubic", fill_value="extrapolate")
     M = interp1d(rs1, Ms1, kind="cubic", fill_value="extrapolate")
     L = interp1d(rs1, Ls1, kind="cubic", fill_value="extrapolate")
+    #
+    rsurf_2 = tt(2./3.)
 
-    rsurf_2 = tt(2/3)
-    print("2: ", rsurf_2/Rsun, T(rsurf_2))
+    # ALTERNATIVE SURFACE DETERMINATION (NOT USED)
+    # rsurf_3 = minimize(lambda x: np.abs(tauinf - tau(x) -2./3.), rs1[surf_i1], bounds=[(0,rs1[tauinf_i])]  )
+    # # print( taus1[tauinf_i] - tau(rsurf.x[0]) -2/3)
+    # rsurf_3 = rsurf_3.x[0]
+    #
+    #
+    # rsurf_4 = brentq(lambda x: tauinf - tau(x) -2./3., rs1[surf_i1-10], rs1[-1], xtol=1e-30)
+    # #print(taus1[tauinf_i] - tau(rsurf) - 2 / 3)
+    #
+    # min_i = -1; min_e = np.abs(f(L(rs1[-1]), rs1[-1], T(rs1[-1])))
+    # for i in range(taus1.shape[0]-1,0):
+    #     if np.abs(f(L(rs1[i]), rs1[i], T(rs1[i]))) < min_e and (tauinf - taus1[i])<1:
+    #         min_i = i
+    #         min_e = np.abs(f(L(rs1[i]), rs1[i], T(rs1[i])))
+    # rsurf_5 = rs1[min_i]
 
-    rsurf_3 = minimize(lambda x: np.abs(tauinf - tau(x) -2/3), rs1[surf_i1], bounds=[(0,rs1[tauinf_i])]  )
-    # print( taus1[tauinf_i] - tau(rsurf.x[0]) -2/3)
-    rsurf_3 = rsurf_3.x[0]
-    print("3: ", rsurf_3 / Rsun, T(rsurf_3))
 
-    rsurf_4 = brentq(lambda x: tauinf - tau(x) -2/3, rs1[surf_i1-10], rs1[-1], xtol=1e-30)
-    #print(taus1[tauinf_i] - tau(rsurf) - 2 / 3)
+    frac_error1 = np.abs(f(Ls1[surf_g1], rs1[surf_g1], Ts1[surf_g1]))
+    frac_error2 = np.abs(f(L(rsurf_2), rsurf_2, T(rsurf_2)))
+    # frac_error3 = np.abs(f(L(rsurf_3), rsurf_3, T(rsurf_3)))
+    # frac_error4 = np.abs(f(L(rsurf_4), rsurf_4, T(rsurf_4)))
+    # frac_error5 = np.abs(f(L(rsurf_5), rsurf_5, T(rsurf_5)))
 
-    print("4: ", rsurf_4/Rsun, T(rsurf_4))
+    surf_err1  = np.abs(tauinf - taus1[surf_g1] - 2. / 3.)
+    surf_err2 = np.abs(tauinf - tau(rsurf_2) - 2. / 3.)
+    # surf_err3 = np.abs(tauinf - tau(rsurf_3) - 2. / 3.)
+    # surf_err4 = np.abs(tauinf - tau(rsurf_4) - 2. / 3.)
+    # surf_err5 = np.abs(tauinf - tau(rsurf_5))
 
-    rsurf = rsurf_2 #rs1[surf_g1] #rsurf_4 #(rsurf + rs1[surf_g1])/2
+    error1 = np.sqrt(frac_error1**2 + surf_err1**2)
+    error2 = np.sqrt(frac_error2 ** 2 + surf_err2 ** 2)
+    # error3 = np.sqrt(frac_error3 ** 2 + surf_err3 ** 2)
+    # error4 = np.sqrt(frac_error4 ** 2 + surf_err4 ** 2)
+    # error5 = np.sqrt(frac_error5 ** 2 + surf_err5 ** 2)
+    # error1 = frac_error1
+    # error2 = frac_error2
+    # error3 = frac_error3
+    # error4 = frac_error4
+    # error5 = frac_error5
 
+    # Automagic surface determination based on error min (worked like ass and caused really bad jumping around)
+    # min_method = np.argmin([error1, error2, error3, error4, error5])
+    rsurf = rsurf_2 #eval("rsurf_{}".format(min_method+1)) #rs1[surf_g1] #rsurf_4 #(rsurf + rs1[surf_g1])/2
+
+    # was rf far enough?
+    if not modified:
+        ks = kappa(rhos1, Ts1)
+    else:
+        ks = kappa_modified(rhos1, Ts1)
+    drhodrs = drhodr(rhos1, Ts1, Ls1, rs1, Ms1, P(rhos1, Ts1))
+    dtau1 =  ks * rhos1 * rhos1 / np.abs(drhodrs)
+
+    print("1: R: {}  T: {}  tauerr: {} f: {}".format(rs1[surf_g1] / Rsun, Ts1[surf_g1], surf_err1, frac_error1))
+    print("2: R: {}  T: {}  tauerr: {} f: {}".format(rsurf_2 / Rsun, T(rsurf_2), surf_err2, frac_error2))
+    # print("3: R: {}  T: {}  tauerr: {} f: {}".format(rsurf_3 / Rsun, T(rsurf_3), surf_err3, frac_error3))
+    # print("4: R: {}  T: {}  tauerr: {} f: {}".format(rsurf_4 / Rsun, T(rsurf_4), surf_err4, frac_error4))
+    # print("5: R: {}  T: {}  tauerr: {} f: {}".format(rsurf_5 / Rsun, T(rsurf_5), surf_err5, frac_error5))
+    #print("Went with: ", min_method+1)
+
+    # Actually perform the interpolation (last index is the surface, allows us to throw away really large chunks of data that only mattered to get tau(inf) )
     rs1 = np.linspace(0.1, rsurf, 5000)
     taus1 = tau(rs1)
     rhos1 = rho(rs1)
@@ -202,13 +310,7 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True):
     Ms1 = M(rs1)
     Ls1 = L(rs1)
     surf_i1 = np.nanargmin(np.abs(rs1-rsurf))
-    tauinf_i = np.nanargmin(np.abs(taus1-tauinf))
-    print("Surf err: ", np.min(np.abs(rs1-rsurf)))
-
-    # was rf far enough?
-    ks = kappa(rhos1, Ts1)
-    drhodrs = drhodr(rhos1, Ts1, Ls1, rs1, Ms1, P(rhos1, Ts1))
-    dtau1 =  ks * rhos1 * rhos1 / np.abs(drhodrs)
+    print("Surf err: ", np.min(np.abs(rs1-rsurf))) # sanity check to make sure the surface radius occurs as an element
 
     # error from luminosity condition
     frac_error1 = f(Ls1[surf_i1], rs1[surf_i1], Ts1[surf_i1])
@@ -224,25 +326,13 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True):
         print("rho: ",rhos1)
         print("dtau: ", dtau1)
 
-        # plots delta tau = dtau = kappa rho^2 / abs(drho/dr)
-        plt.plot(rs1, dtau1, "r-", label="Opacity Proxy")
-        plt.scatter(surf_i1, dtau1[surf_i1], marker="o", c="b")
-        plt.ylim(0, 1)
-        plt.xlim(0, rs1[-1])
-        plt.grid()
-        plt.savefig("dtau.png", dpi=300)
-        plt.clf()
-        plt.close()
-
     if verbosity > 0:
         print("Curr Tsurf: ", Ts1[surf_i1])
         print("Curr rho: ", rho_c_trial)
         print("Curr Err: ", frac_error1)
-        print("Curr dtau: ", dtau1[tauinf_i])
-        print("Err in tau(surf): ", np.min(np.abs(tauinf - taus1[surf_i1] - 2/3)))
+        print("Curr dtau: ", dtau1[(~np.isnan(dtau1)).cumsum().argmax()])
+        print("Err in tau(surf): ", np.abs(tauinf - taus1[-1] - 2./3.))
         print(" ")
-
-
 
     if not optimize:
         return np.array([rs1, rhos1, Ts1, Ms1, Ls1, taus1, surf_i1, frac_error1])
@@ -250,41 +340,91 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True):
         return frac_error1
 
 
-def find_ics(rho_c_min, rho_c_max, max_iters, system=star):
+def find_ics(rho_c_min, rho_c_max, Tc, rf, max_iters, system=star, modified=False):
 
     # beginning points
-    f2 = trial_soln(rho_c_min, system=system)
-    f1 = trial_soln(rho_c_max, system=system)
+    fs = []
+    rhos = []
+    oldmin = -1
+
+    # init bounds
+    f2 = trial_soln(rho_c_min, Tc, rf , system=system, modified=modified)
+    fs.append(f2)
+    rhos.append(rho_c_min)
+
+    f1 = trial_soln(rho_c_max, Tc, rf, system=system, modified=modified)
+    fs.append(f1)
+    rhos.append(rho_c_max)
+
     print("Initial error bounds: {} {}".format(f1, f2))
 
-    # root not in interval defined by [rho_c_min, rho_c_max]
-    if f1*f2 > 0:
+    if f1*f2 > 0: # root not in interval defined by [rho_c_min, rho_c_max]
         print("Pick better bounds, one needs to be negative")
-        return -1
+        raise ValueError # used to auto adjust bounds later
     else:
         for n in range(max_iters):
-            print("Optimization round: ", n)
-            rho_m = (rho_c_max + rho_c_min)/2
+            intcount = 0
+            try:
+                print("Optimization round: ", n)
+                rho_m = (rho_c_max + rho_c_min)/2
+                rs, rhoss, Ts, Ms, Ls, taus, surf, f3 = trial_soln(rho_m, Tc, rf, system=system, optimize=False, modified=modified)
+                fs.append(f3)
+                rhos.append(rho_m)
 
-            f3 = trial_soln(rho_m, system=system)
-            print(rho_m, f3)
+                # binary search, change one bound and recompute the other
+                if f1*f3 < 0:
+                    rho_c_min = rho_m
+                    f2 = f3
 
-            # binary search, change one bound and recompute the other
-            if f1*f3 < 0:
-                rho_c_min = rho_m
-                f2 = f3 #trial_soln(rho_c_min, system=system)[-1]
-                print(rho_c_min, f2)
+                elif f2*f3 < 0:
+                    rho_c_max = rho_m
+                    f1 = f3
 
-            elif f2*f3 < 0:
-                rho_c_max = rho_m
-                f1 = f3 #trial_soln(rho_c_max, system=system)[-1]
-                #print(rho_c_max, f1)
-            elif np.abs(f3) < 3e-5: # end condition
-                return rho_m
+                # Adjusted criteria based on how long its taking
+                if (np.min(np.abs(fs)) < 3e-5): # end condition
+                    break
+                elif ((np.min(np.abs(fs)) < 1e-4) or (np.abs(fs[-1]) < 1e-4) )  and n > 20:
+                    print("f is smaller than threshold for 20 iters")
+                    break
+                elif ((np.min(np.abs(fs)) < 1e-2) or (np.abs(fs[-1]) < 1e-2) ) and n > 50:
+                    print("f is smaller than threshold for 50 iters")
+                    break
+                elif ((np.min(np.abs(fs)) < 0.5) or (np.abs(fs[-1]) < 0.5) ) and n > 100:
+                    print("f is smaller than threshold for 100 iters")
+                    break
+                elif len(fs) > 5 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-4 and np.abs(fs[-1])<1 and n>50:
+                    print("f is small and fs are similar")
+                    break
+                elif len(rhos) > 5 and np.min(np.abs(rhos[-1] - np.array(rhos[-3:]))) < 1e-10 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-10 and np.abs(fs[-1])<10 and n>250:
+                    print("Rho doesnt change, f changes little, f is small")
+                    break
+                elif n>200 and np.min(np.abs(fs)) < 1:
+                    print("Over 200 and err <1")
+                    break
 
-    return (rho_c_max + rho_c_min)/2
+                print("Curr min error: ", np.min(np.abs(fs)))
+                # Okay so this looks kinda janky, and it is
+                # Basically, the solver is nondeterministic-ish, so running w the same inputs doesnt always give the same outputs
+                # Which sometimes leads to getting solns with really bad error even after bisection
+                # So simply I stored all the variables and spit out the ones that came with whatever the minimum error was
+                if np.min(np.abs(fs)) != oldmin or  oldmin == -1:
+                    oldmin = np.min(np.abs(fs))
+                    keepvars = np.array([rs, rhoss, Ts, Ms, Ls, taus, surf, fs[-1]])
 
-def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0):
+            except KeyboardInterrupt: # This didnt end up mattering for me, crtl C just kills python itself
+                intcount += 1
+                if intcount>3:
+                    break
+                continue
+
+        if np.min(np.abs(fs)) != oldmin or  oldmin == -1:
+            oldmin = np.min(np.abs(fs))
+            keepvars = np.array([rs, rhoss, Ts, Ms, Ls, taus, surf, fs[-1]])
+        mini = np.argmin(np.abs(fs))
+
+    return keepvars #rhos[mini] #(rho_c_max + rho_c_min)/2
+
+def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0, modified=False):
 
     try:
         import os
@@ -292,41 +432,7 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0):
     except: # folder already exists
         pass
 
-    # HR diagram
-    logT = np.log10(Ts)
-    logL = np.log10(Ls/Lsun)
-    plt.plot(logT, logL, "k-")
-    plt.xlabel(r"$\log_{10} T$")
-    plt.ylabel(r"$\log_{10} L$")
-    plt.title("Hertzprung-Russel Diagram")
-    plt.grid()
-    #plt.xlim(3,7)
-    plt.ylim(-5,5)
-    plt.gca().invert_xaxis()
-    plt.savefig("{0}/HR_{0}.png".format(n), dpi=300)
-    plt.clf()
-    plt.close()
-
-    # L/Lsun as a fn of M/Msun
-    plt.plot(Ms/Msun, Ls/Lsun, "b-" )
-    plt.xlabel(r"$M/M_{\odot}$")
-    plt.ylabel(r"$L/L_{\odot}$")
-    plt.title("Luminosity as a function of Mass")
-    plt.grid()
-    plt.savefig("{0}/LM_{0}.png".format(n), dpi=300)
-    plt.clf()
-    plt.close()
-
-    # R/Rsun as a fn of M/Msun
-    plt.plot(Ms/Msun, rs/Rsun, "b-" )
-    plt.xlabel(r"$M/M_{\odot}$")
-    plt.ylabel(r"$R/R_{\odot}$")
-    plt.title("Radius as a function of Mass")
-    plt.grid()
-    plt.savefig("{0}/RM_{0}.png".format(n), dpi=300)
-    plt.clf()
-    plt.close()
-
+    # This is the fancy plot with a lot of lines
     plt.plot(rs/rs[surf], rhos/rhos[0], label=r"$\rho/\rho_c$")
     plt.plot(rs/rs[surf], Ts/Ts[0], label=r"$T/T_c$")
     plt.plot(rs/rs[surf], Ms/Ms[surf], label=r"$M/M_{surf}$")
@@ -342,12 +448,12 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0):
     plt.clf()
     plt.close()
 
+    # Plot tau and tauinf - tau
     infi = -1
     for i in range(taus.shape[0]-1,0):
         if not np.isnan(taus[i]):
             infi = i
             break
-    #print(infi, taus[infi])
     plt.plot(rs/rs[surf], taus[infi]-taus, label=r"$\tau(\infty)-\tau(r)$")
     plt.xlabel(r"$R/R_{surf}$")
     plt.ylabel("Optical Depth")
@@ -370,10 +476,19 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0):
     plt.clf()
     plt.close()
 
-    ks = kappa(rhos, Ts)
+
+    # Opacity plot
     ks1 = kappa_H(rhos, Ts)
     ks2 = kappa_es
     ks3 = kappa_ff(rhos, Ts)
+
+    if modified:
+        ks4 = kappa_i(rhos, Ts)
+        plt.plot(rs/rs[surf], np.log10(ks4), label=r"Extra absorption feature")
+        ks = kappa_modified(rhos, Ts)
+    else:
+        ks = kappa(rhos, Ts)
+
     plt.plot(rs / rs[surf], np.log10(ks3), label=r"$log_{10}\kappa_{ff}$")
     plt.plot(rs / rs[surf], np.log10(np.ones(rhos.shape)*ks2), label=r"$log_{10}\kappa_{es}$")
     plt.plot(rs/rs[surf], np.log10(ks1), label=r"$log_{10}\kappa_{H}$")
@@ -388,6 +503,7 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0):
     plt.clf()
     plt.close()
 
+    # Luminosity derivative plot
     dLdrs = dLdr(rhos, rs, Ts)
     plt.plot(rs/rs[surf], dLdrs*rs[surf]/Ls[surf], label=r"$\frac{dL}{dr}$")
     plt.xlabel(r"$R/R_{surf}$")
@@ -399,6 +515,7 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0):
     plt.clf()
     plt.close()
 
+    # Pressure plot
     Ps = P(rhos, Ts)
     Pdeg = ((3*np.pi**2)**(2/3))*hbar**2 *(rhos/mp)**(5/3) / (5*me)
     Pgamma = a * (Ts**4) /3
@@ -417,100 +534,116 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0):
     plt.clf()
     plt.close()
 
-    plt.plot(rs/rs[surf], Ps, label=r"$P_{total}$")
-    plt.plot(rs/rs[surf], Pdeg, label=r"$P_{degen}$")
-    plt.plot(rs/rs[surf], Pgamma, label=r"$P_{\gamma}$")
-    plt.plot(rs/rs[surf], Pgas, label=r"$P_{ideal}$")
-    plt.xlabel(r"$R/R_{surf}$")
-    plt.ylabel(r"$P$")
-    plt.xlim(0, 1)
-    plt.legend()
-    plt.title("Pressure as a function of Radius")
-    plt.grid()
-    plt.savefig("{0}/Pressure_nonnorm_{0}.png".format(n), dpi=300)
-    plt.clf()
-    plt.close()
-
-
-
-def main(qq):
+def mainsequence(qq, modified=False, system=star):
     import datetime as dt
+    import os
     global r_f, T_c
 
-    # tweak the inputs here to get a good rho_c
-    #rho_c_true = find_ics(88363.91364835274, 88363.91364835275, 100)
-    #print(rho_c_true)
-
-    LLs=[]; MMs=[]; TTs=[]; RRs =[]
+    LLs=[]; MMs=[]; TTs=[]; RRs =[]; fs = []; corr_TTs=[]
     rho_cs = []
     start = dt.datetime.now()
-    for i,T_c in enumerate(np.linspace(1e6, 35e6, 50)): # enumerate([8.23e6]): # brodericks star
-        print("==================== Begginging the {}th Star, Tc: {} ====================".format(i, T_c))
-        r_f = 20*Rsun if T_c > 1.5e7 else 2*Rsun
+    for i,T_c in enumerate(np.linspace(1.5e6, 35e6, 20)): # enumerate([8.23e6]): # brodericks star
+        print("==================== Beginning the {}th Star, Tc: {} ====================".format(i, T_c))
+        r_f = 20*Rsun # starter radius of integration, almost always gets increased automatically
 
-        fail = False
+        # Main loop, note that it will automatically retry failed bisections w slightly different bounds
+        fail = False; res=0
         try:
-            rho_c_true, res = brentq(trial_soln, 300, 500000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500) # maxiter=100,
+            #rho_c_true, res = brentq(trial_soln, 300, 500000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500) # maxiter=100,
+            rho_c_true = find_ics(300, 500000, T_c, r_f, 500, modified=modified, system=system)
             fail = False
         except ValueError as e:
+            raise e
             print("Retrying 1")
             fail = True
         if fail:
             try:
-                rho_c_true, res = brentq(trial_soln, 300, 400000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500) # maxiter=100,
+                #rho_c_true, res = brentq(trial_soln, 300, 400000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500) # maxiter=100,
+                rho_c_true = find_ics(300, 400000, T_c, r_f, 500, modified=modified, system=system)
                 fail = False
             except ValueError as e:
                 fail = True
                 print("Retrying 2")
         if fail:
             try:
-                rho_c_true, res = brentq(trial_soln, 10, 800000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500) # maxiter=100,
+                #rho_c_true, res = brentq(trial_soln, 10, 800000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500) # maxiter=100,
+                rho_c_true = find_ics(10, 800000, T_c, r_f, 500, modified=modified, system=system)
                 fail = False
             except ValueError as e:
                 fail = True
                 print("Retrying 3")
         if fail:
             try:
-                rho_c_true, res = brentq(trial_soln, 10, 600000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500)
+                #rho_c_true, res = brentq(trial_soln, 10, 600000,  args=(T_c, r_f), full_output=True, xtol=1e-30, maxiter=500)
+                rho_c_true = find_ics(300, 600000, T_c, r_f, 500, modified=modified, system=system)
             except ValueError as e:
                 print("Failed 4")
-                continue
+                continue # Just continue going if it fails all 4
 
 
 
         end = dt.datetime.now()
         print(res)
-        rs, rhos, Ts, Ms, Ls, taus, surf, f = trial_soln(rho_c_true, T_c, r_f, optimize=False)
-        print(f)
-        plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n="MainSeq{}_{}".format(qq,i))
+        rs, rhos, Ts, Ms, Ls, taus, surf, ff = rho_c_true #trial_soln(rho_c_true, T_c, r_f, optimize=False, final=True)
+        print(ff)
+        plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, ff, n="MainSeq{}_{}".format(qq,i), modified=modified)
 
         LLs.append(Ls[surf])
         MMs.append(Ms[surf])
         RRs.append(rs[surf])
         TTs.append(Ts[surf])
+        fs.append(ff)
+
+        if not modified:
+            tsurf_expected = (Ls[surf] / (4. * np.pi * (rs[surf] ** 2) * sb)) ** (1. / 4.)
+            corr_TTs.append(tsurf_expected)
+        else:
+            try:
+                loaded = np.load("corrections.npz" )
+                corr_TTs = loaded['corr_temps']
+                fail = False
+            except:
+                fail = True
+
+        fig = plt.figure()
+        ax = plt.gca()
+        ax.plot(np.array(TTs), np.array(LLs) / Lsun, 'b-o', label="Generated")
+        if not modified:
+            plt.plot(np.array(corr_TTs), np.array(LLs)/Lsun, "g--.", label="Corrected")
+        else:
+            if not fail:
+               plt.plot(np.array(TTs) + (loaded['corr_temps'] - loaded['og_temps'])[:len(TTs)], np.array(LLs) / Lsun, "g--.", label="Corrected")
+        ax.set_yscale('log')
+        ax.set_xscale('log')
+        plt.xlim(6e2, 5e4)
+        plt.ylim(1e-5, 1e6)
+        plt.xlabel("Temperature (K)")
+        plt.ylabel(r"Luminosity ($L_{\odot}$)")
+        plt.title("Hertzprung-Russel Diagram")
+        plt.gca().invert_xaxis()
+        plt.legend()
+        if os.path.isfile("MainSeq{}_HertzprungRussel.png".format(qq)):
+            os.remove("MainSeq{}_HertzprungRussel.png".format(qq))
+        plt.savefig("MainSeq{}_HertzprungRussel.png".format(qq), dpi=500)
+        plt.clf()
+        plt.close()
 
         print(Ts[surf], Ls[surf] / Lsun, rs[surf] / Rsun)
 
-        rho_cs.append((rho_c_true, f, Ts[surf], Ls[surf] / Lsun, rs[surf] / Rsun) )
     print("Overall Took: ", (end - start).seconds)
 
-    fig = plt.figure()
-    ax = plt.gca()
-    ax.scatter(np.array(TTs), np.array(LLs)/Lsun, c="b" )
-    ax.plot(np.array(TTs), np.array(LLs) / Lsun, 'b-')
-    ax.set_yscale('log')
-    ax.set_xscale('log')
-    plt.xlim(6e2,5e4)
-    plt.ylim(1e-5, 1e6)
-    plt.xlabel("Temperature (K)")
-    plt.ylabel(r"Luminosity ($L_{\odot}$)")
-    plt.title("Hertzprung-Russel Diagram")
-    plt.gca().invert_xaxis()
-    plt.savefig("MainSeq{}_HertzprungRussel.png".format(qq), dpi=500)
+    if not modified:
+        np.savez("corrections.npz", og_temps=np.array(TTs), corr_temps=np.array(corr_TTs)  )
+
+
+    epochs = np.arange(0, len(fs), 1)
+    plt.plot(epochs, fs)
+    plt.ylabel("Error")
+    plt.savefig("MainSeq{}_error.png".format(qq), dpi=500 )
     plt.clf()
     plt.close()
 
-    plt.scatter(np.array(MMs)/Msun, np.array(LLs)/Lsun, label="Calculated")
+    plt.scatter(np.array(MMs)/Msun, np.array(LLs)/Lsun, "b-o", label="Calculated")
     emp_Ms = np.linspace(np.nanmin(MMs), np.nanmax(MMs), 1000)
     emp_Ls = []
     for M in emp_Ms:
@@ -518,65 +651,70 @@ def main(qq):
             emp_Ls.append(0.35*np.power(M/Msun, 2.62))
         else:
             emp_Ls.append(1.02*np.power(M/Msun,3.92))
-    plt.plot(np.array(emp_Ms)/Msun, np.array(emp_Ls), "-", label="Empirical Fit")
+    plt.plot(np.array(emp_Ms)/Msun, np.array(emp_Ls), "g--.", label="Empirical Fit")
     plt.xlabel(r"$M/M_{\odot}$")
     plt.ylabel(r"$L/L_{\odot}$")
+    plt.title("Mass-Luminosity Relationship")
     ax = plt.gca()
     ax.set_yscale('log')
     ax.set_xscale('log')
     plt.xlim(8e-1,2e2)
     plt.ylim(1e-4, 1e8)
+    plt.legend()
     plt.savefig("MainSeq{}_LM.png".format(qq), dpi=500)
     plt.clf()
     plt.close()
 
-    plt.scatter(np.array(MMs)/Msun, np.array(RRs)/Rsun, label="Calculated")
+    plt.scatter(np.array(MMs)/Msun, np.array(RRs)/Rsun, "b-o", label="Calculated")
     emp_Rs = []
     for M in emp_Ms:
         if M>1.66*Msun:
             emp_Rs.append(1.33*np.power(M/Msun, 0.555))
         else:
             emp_Rs.append(1.06*np.power(M/Msun,0.945))
-    plt.plot(np.array(emp_Ms)/Msun, np.array(emp_Rs), "-", label="Empirical Fit")
-    plt.xlabel("M/Msun")
-    plt.ylabel("R/Rsun")
+    plt.plot(np.array(emp_Ms)/Msun, np.array(emp_Rs), "g--.", label="Empirical Fit")
+    plt.xlabel(r"$M/M_{\odot}$")
+    plt.ylabel(r"$R/R_{\odot}$")
+    plt.title("Mass-Radius Relationship")
     ax = plt.gca()
     ax.set_yscale('log')
     ax.set_xscale('log')
     plt.xlim(8e-1,2e2)
     plt.ylim(8e-2, 2e2)
+    plt.legend()
     plt.savefig("MainSeq{}_MR.png".format(qq), dpi=500)
     plt.clf()
     plt.close()
 
+# Uncomment the one you want
+# I run them in parallel because it doesnt take a ton of resources on my pc
+# Make sure the unmodified main sequence finishes first though! (I put the corrections on git so this is only if you dick around with the params too much)
+if __name__ == "__main__":
+    global Ti
+    global kappa_0
 
-    # T_c = 1.5e7; r_f = 2*Rsun
-    # T_c = 8.23e6
-    # start = dt.datetime.now()
-    # #rho_c_true, res = bisect(trial_soln, 300, 500000,  args=(T_c, r_f), full_output=True, xtol=1e-30)
-    # rho_c_true, res = brentq(trial_soln, 73480, 73490 , args=(T_c, r_f), full_output=True, xtol=1e-30)
-    # print(rho_c_true)
-    # end = dt.datetime.now()
-    # print("Optimization Took: ", (end - start).seconds)
-    # print(res)
+    # Unmodified Main Sequence
+    # mainsequence("Real", modified=False)
 
-    # print(rho_cs)
-    # rho_c =
+    # Modifications:
+    Ti = 2e6
+    kappa_0 = 1e24
+    mainsequence("Modified_1", modified=True, system=star_modified)
 
-    # get soln with our rho_c
-    # rs, rhos, Ts, Ms, Ls, taus, surf, f = trial_soln(rho_c_true, T_c, r_f, optimize=False)
-    # print(f)
+    Ti = 8e6
+    kappa_0 = 5 * 1e24
+    # mainsequence("Modified_2", modified=True, system=star_modified)
+    #
+    Ti = 4e6
+    kappa_0 = 2 * 1e24
+    # mainsequence("Modified_3", modified=True, system=star_modified)
+    #
+    Ti = 0.5e6
+    kappa_0 = 2e24
+    # mainsequence("Modified_4", modified=True, system=star_modified)
 
-    # print("Tsurf: {:.1f}K\t Lsurf: {:.4f}Lsun\t Rsurf: {:.4f}Rsun\t Msurf: {:.4f}Msun".format(Ts[surf], Ls[surf]/Lsun, rs[surf]/Rsun, Ms[surf]/Msun))
-
-    # save all the data if it takes a long time to generate solns
-    #np.savez("mainseq", rs=rs, rhos=rhos, Ts=Ts, Ms=Ms, Ls=Ls, taus=taus, f=f)
-    # np.loadz?
-
-
-    # plot all the things!
-    # plot_all(rs ,rhos, Ts, Ms, Ls, taus, surf, f, n="main")
-
-
+    Ti = 8e3
+    kappa_0 = 20e24
+    # mainsequence("Modified_5", modified=True, system=star_modified)
 
 
