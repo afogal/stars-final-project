@@ -56,7 +56,7 @@ def drhodr( rho, T, L, r, M, P):
     return -(G*M*rho/r**2 + dPdT( rho, T) * dTdr(rho, T, L, r, M, P)) /dPdrho(rho,T)
 
 def dTdr(  rho, T, L, r, M, P):
-    return - np.nanmin([ 3 * kappa(rho,T) * rho * L/(16*np.pi*a*c*(T**3)*(r**2)), (1 - 1/gamma)*(T/P)*G*M*rho/r**2], axis=0 )
+    return - np.nanmin([ np.abs(3 * kappa(rho,T) * rho * L/(16*np.pi*a*c*(T**3)*(r**2))), np.abs((1 - 1/gamma)*(T/P)*G*M*rho/r**2)], axis=0 )
 
 def dMdr(r, rho):
     return 4*np.pi*(r**2)*rho
@@ -97,10 +97,25 @@ def kappa_H(rho, T):
     return (2.5e-32)*(Z/0.02)*np.power(rho/1e3, 0.5)*(T**9)
 
 def kappa(rho, T):
-    try:
-        return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
-    except AttributeError:
-        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
+    if isinstance(T, np.ndarray):
+        out = np.zeros(T.shape)
+        for i in range(out.shape[0]):
+            if(T[i]>1e4):
+                out[i] =1/(1/kappa_H(rho[i], T[i]) + 1/np.nanmax([kappa_es, kappa_ff(rho[i],T[i])], axis=0) )
+            else:
+                out[i] = 1 / (1 / kappa_H(rho[i], T[i]) + 1 / np.nanmin([kappa_es, kappa_ff(rho[i], T[i])],axis=0))
+        return out
+    else:
+        if(T>1e4):
+            try:
+                return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
+            except AttributeError:
+                return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
+        else:
+            try:
+                return 1/(1/kappa_H(rho, T) + 1/np.nanmin([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
+            except AttributeError:
+                return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmin([kappa_es, kappa_ff(rho, T)], axis=0))
 
 # these ones are our group specific
 # The specific Ti and kappa_0 are set below
@@ -123,10 +138,25 @@ def kappa_i(rho, T):
 
 
 def kappa_modified(rho, T):
-    try:
-        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es * np.ones(rho.shape), kappa_ff(rho, T), kappa_i(rho, T)], axis=0))
-    except AttributeError as e:
-        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T), kappa_i(rho, T)], axis=0))
+    if isinstance(T, np.ndarray):
+        out = np.zeros(T.shape)
+        for i in range(out.shape[0]):
+            if(T[i]>1e4):
+                out[i] =1/(1/kappa_H(rho[i], T[i]) + 1/np.nanmax([kappa_es, kappa_ff(rho[i],T[i]), kappa_i(rho[i], T[i])], axis=0) )
+            else:
+                out[i] = 1 / (1 / kappa_H(rho[i], T[i]) + 1 / np.nanmin([kappa_es, kappa_ff(rho[i], T[i]), kappa_i(rho[i], T[i])],axis=0))
+        return out
+    else:
+        if(T>1e4):
+            try:
+                return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T),kappa_i(rho, T)], axis=0) )
+            except AttributeError:
+                return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
+        else:
+            try:
+                return 1/(1/kappa_H(rho, T) + 1/np.nanmin([kappa_es*np.ones(rho.shape), kappa_ff(rho,T),kappa_i(rho, T)], axis=0) )
+            except AttributeError:
+                return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmin([kappa_es, kappa_ff(rho, T),kappa_i(rho, T)], axis=0))
 
 def star_modified(r,y):
     rho = y[0]
@@ -177,16 +207,17 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, m
 
         # Use our modification
         if not modified:
-            tau_c = dtaudr(rho_c_trial, kappa(rho_c_trial, T_c)) * r_c
+            tau_c = kappa(rho_c_trial, T_c) * rho_c_trial
         else:
-            tau_c = dtaudr(rho_c_trial, kappa_modified(rho_c_trial, T_c)) * r_c
+            tau_c = kappa_modified(rho_c_trial, T_c) * rho_c_trial
 
         # Runs with a better stepsize on the final try (speeds up bisection)
         # If it runs really slowly on your computer, try increasing the max_stepsize
-        if not final:
-            all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45', atol=1e-18 , max_step=0.01 * r_f)
-        else:
-            all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45', atol=1e-18, max_step=0.0005 * r_f)
+        # if not final:
+        all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45', atol=1e-18)# , max_step=0.01 * r_f)
+        # else:
+        #     all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45', atol=1e-18, max_step=0.0005 * r_f)
+        # all = solve_ivp(system, (r_c, r_f), np.array([rho_c_trial, T_c, M_c, L_c, tau_c]), method='RK45')
 
         # Variable renaming
         rhos1 = all.y[0, :]
@@ -395,7 +426,7 @@ def find_ics(rho_c_min, rho_c_max, Tc, rf, max_iters, system=star, modified=Fals
                 elif len(fs) > 5 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-4 and np.abs(fs[-1])<1 and n>50:
                     print("f is small and fs are similar")
                     break
-                elif len(rhos) > 5 and np.min(np.abs(rhos[-1] - np.array(rhos[-3:]))) < 1e-10 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-10 and np.abs(fs[-1])<10 and n>250:
+                elif len(rhos) > 5 and np.min(np.abs(rhos[-1] - np.array(rhos[-3:]))) < 1e-10 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-10 and n>250:
                     print("Rho doesnt change, f changes little, f is small")
                     break
                 elif n>200 and np.min(np.abs(fs)) < 1:
@@ -534,6 +565,20 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0, modified=False):
     plt.clf()
     plt.close()
 
+    # dlogP/dlogT graph
+    dlPdlT = np.zeros(Ps.shape)
+    for i in range(Ps.shape[0]-1):
+        dlPdlT[i] = (np.log10(Ps[i+1])-np.log10(Ps[i]))/(np.log10(Ts[i+1])-np.log10(Ts[i]))
+    plt.plot(rs/rs[surf], dlPdlT)
+    plt.xlabel(r"$R/R_{surf}$")
+    plt.ylabel(r"$d\log_{10} P / \d\log_{10} T$")
+    plt.xlim(0, 1)
+    plt.title("Logarithmic derivative of P as a function of Radius")
+    plt.grid()
+    plt.savefig("{0}/logderivP_{0}.png".format(n), dpi=300)
+    plt.clf()
+    plt.close()
+
 def mainsequence(qq, modified=False, system=star):
     import datetime as dt
     import os
@@ -542,7 +587,7 @@ def mainsequence(qq, modified=False, system=star):
     LLs=[]; MMs=[]; TTs=[]; RRs =[]; fs = []; corr_TTs=[]
     rho_cs = []
     start = dt.datetime.now()
-    for i,T_c in enumerate(np.linspace(1.5e6, 35e6, 20)): # enumerate([8.23e6]): # brodericks star
+    for i,T_c in  enumerate(np.linspace(1.5e6, 35e6, 20)): # enumerate([8.23e6]): # brodericks star
         print("==================== Beginning the {}th Star, Tc: {} ====================".format(i, T_c))
         r_f = 20*Rsun # starter radius of integration, almost always gets increased automatically
 
@@ -553,7 +598,6 @@ def mainsequence(qq, modified=False, system=star):
             rho_c_true = find_ics(300, 500000, T_c, r_f, 500, modified=modified, system=system)
             fail = False
         except ValueError as e:
-            raise e
             print("Retrying 1")
             fail = True
         if fail:
@@ -594,7 +638,7 @@ def mainsequence(qq, modified=False, system=star):
         TTs.append(Ts[surf])
         fs.append(ff)
 
-        if not modified:
+        if not modified and qq == "Real":
             tsurf_expected = (Ls[surf] / (4. * np.pi * (rs[surf] ** 2) * sb)) ** (1. / 4.)
             corr_TTs.append(tsurf_expected)
         else:
@@ -608,11 +652,12 @@ def mainsequence(qq, modified=False, system=star):
         fig = plt.figure()
         ax = plt.gca()
         ax.plot(np.array(TTs), np.array(LLs) / Lsun, 'b-o', label="Generated")
+        plt.plot(5760, 1, "+", label="Sun")
         if not modified:
             plt.plot(np.array(corr_TTs), np.array(LLs)/Lsun, "g--.", label="Corrected")
         else:
             if not fail:
-               plt.plot(np.array(TTs) + (loaded['corr_temps'] - loaded['og_temps'])[:len(TTs)], np.array(LLs) / Lsun, "g--.", label="Corrected")
+               plt.plot(np.array(TTs) + (loaded['corr_temps'] - loaded['og_temps'])[:len(TTs)], np.array(LLs)[:len(TTs)] / Lsun, "g--.", label="Corrected")
         ax.set_yscale('log')
         ax.set_xscale('log')
         plt.xlim(6e2, 5e4)
@@ -628,7 +673,7 @@ def mainsequence(qq, modified=False, system=star):
         plt.clf()
         plt.close()
 
-        print(Ts[surf], Ls[surf] / Lsun, rs[surf] / Rsun)
+        print(Ts[surf], Ls[surf] / Lsun, rs[surf] / Rsun, Ms[surf]/Msun)
 
     print("Overall Took: ", (end - start).seconds)
 
@@ -643,7 +688,7 @@ def mainsequence(qq, modified=False, system=star):
     plt.clf()
     plt.close()
 
-    plt.scatter(np.array(MMs)/Msun, np.array(LLs)/Lsun, "b-o", label="Calculated")
+    plt.plot(np.array(MMs)/Msun, np.array(LLs)/Lsun, "b-o", label="Calculated")
     emp_Ms = np.linspace(np.nanmin(MMs), np.nanmax(MMs), 1000)
     emp_Ls = []
     for M in emp_Ms:
@@ -665,7 +710,7 @@ def mainsequence(qq, modified=False, system=star):
     plt.clf()
     plt.close()
 
-    plt.scatter(np.array(MMs)/Msun, np.array(RRs)/Rsun, "b-o", label="Calculated")
+    plt.plot(np.array(MMs)/Msun, np.array(RRs)/Rsun, "b-o", label="Calculated")
     emp_Rs = []
     for M in emp_Ms:
         if M>1.66*Msun:
@@ -694,12 +739,12 @@ if __name__ == "__main__":
     global kappa_0
 
     # Unmodified Main Sequence
-    # mainsequence("Real", modified=False)
+    mainsequence("Real", modified=False)
 
     # Modifications:
     Ti = 2e6
     kappa_0 = 1e24
-    mainsequence("Modified_1", modified=True, system=star_modified)
+    # mainsequence("Modified_1", modified=True, system=star_modified)
 
     Ti = 8e6
     kappa_0 = 5 * 1e24
