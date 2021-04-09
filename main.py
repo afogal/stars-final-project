@@ -177,7 +177,7 @@ def kappa_modified(rho, T):
     if isinstance(rho, np.ndarray):
         return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T),kappa_i(rho, T)], axis=0) )
     else:
-        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
+        return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T),kappa_i(rho, T)], axis=0))
 
 @jit
 def star_modified(r,y):
@@ -512,11 +512,13 @@ def find_ics(rho_c_min, rho_c_max, Tc, rf, max_iters, system=star, modified=Fals
             elif len(fs) > 5 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-4 and np.abs(fs[-1])<1 and n>50:
                 print("f is small and fs are similar")
                 break
-            elif len(rhos) > 5 and np.min(np.abs(rhos[-1] - np.array(rhos[-3:]))) < 1e-10 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-10 and n>250:
+            elif len(rhos) > 5 and np.min(np.abs(rhos[-1] - np.array(rhos[-3:]))) < 1e-10 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-10 and n>20:
                 print("Rho doesnt change, f changes little, f is small")
                 break
             elif n>200 and np.min(np.abs(fs)) < 1:
                 print("Over 200 and err <1")
+                break
+            elif n > 100:
                 break
 
             print("Curr min error: ", np.min(np.abs(fs)))
