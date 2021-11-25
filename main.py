@@ -51,12 +51,12 @@ def P(rho, T):
 # the big 5 =================================
 # theyre kinda hard to read, keep the doc side by side
 @jit
-def drhodr( rho, T, L, r, M, P):
-    return -(G*M*rho/r**2 + dPdT( rho, T) * dTdr(rho, T, L, r, M, P)) /dPdrho(rho,T)
+def drhodr( rho, T, L, r, M, P, kappas):
+    return -(G*M*rho/r**2 + dPdT( rho, T) * dTdr(rho, T, L, r, M, P, kappas)) /dPdrho(rho,T)
 
 @jit
-def dTdr(  rho, T, L, r, M, P):
-    return - np.nanmin([ np.abs(3 * kappa(rho,T) * rho * L/(16*np.pi*a*c*(T**3)*(r**2))), np.abs((1 - 1/gamma)*(T/P)*G*M*rho/r**2)], axis=0 )
+def dTdr(  rho, T, L, r, M, P, kappas):
+    return - np.nanmin([ np.abs(3 * kappas * rho * L/(16*np.pi*a*c*(T**3)*(r**2))), np.abs((1 - 1/gamma)*(T/P)*G*M*rho/r**2)], axis=0 )
 
 @jit
 def dMdr(r, rho):
@@ -187,8 +187,8 @@ def star_modified(r,y):
     L = y[3]
     tau = y[4]
 
-    rhodot = drhodr(rho, T, L, r, M, P(rho, T))
-    Tdot = dTdr(rho, T, L, r, M, P(rho, T))
+    rhodot = drhodr(rho, T, L, r, M, P(rho, T), kappa_modified(rho, T))
+    Tdot = dTdr(rho, T, L, r, M, P(rho, T), kappa_modified(rho, T))
     Mdot = dMdr(r, rho)
     Ldot = dLdr(rho, r, T)
     taudot = dtaudr(rho, kappa_modified(rho, T))
@@ -209,8 +209,8 @@ def star(r,y):
     L = y[3]
     tau = y[4]
 
-    rhodot = drhodr(rho, T, L, r, M, P(rho, T))
-    Tdot = dTdr(rho, T, L, r, M, P(rho, T))
+    rhodot = drhodr(rho, T, L, r, M, P(rho, T), kappa(rho, T))
+    Tdot = dTdr(rho, T, L, r, M, P(rho, T), kappa(rho, T))
     Mdot = dMdr(r, rho)
     Ldot = dLdr(rho, r, T)
     taudot = dtaudr(rho, kappa(rho, T))
@@ -233,7 +233,7 @@ def dtausmall(all, rs1, modified=False, ret=False):
     else:
         ks = kappa_modified(rhos1, Ts1)
 
-    drhodrs = drhodr(rhos1,Ts1, Ls1, rs1, Ms1, P(rhos1, Ts1))
+    drhodrs = drhodr(rhos1,Ts1, Ls1, rs1, Ms1, P(rhos1, Ts1), ks)
     dtau1 = ks * rhos1 * rhos1 / np.abs(drhodrs)
 
     if ret:
@@ -410,7 +410,7 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, m
         ks = kappa(rhos1[tauinf_i], Ts1[tauinf_i])
     else:
         ks = kappa_modified(rhos1[tauinf_i], Ts1[tauinf_i])
-    drhodrs = drhodr(rhos1[tauinf_i], Ts1[tauinf_i], Ls1[tauinf_i], rs1[tauinf_i], Ms1[tauinf_i], P(rhos1[tauinf_i], Ts1[tauinf_i]))
+    drhodrs = drhodr(rhos1[tauinf_i], Ts1[tauinf_i], Ls1[tauinf_i], rs1[tauinf_i], Ms1[tauinf_i], P(rhos1[tauinf_i], Ts1[tauinf_i]), ks)
     dtau1 =  ks * rhos1[tauinf_i] * rhos1[tauinf_i] / np.abs(drhodrs)
 
     print("1: R: {}  T: {}  tauerr: {} f: {}".format(rs1[surf_g1] / Rsun, Ts1[surf_g1], surf_err1, frac_error1))
@@ -509,16 +509,16 @@ def find_ics(rho_c_min, rho_c_max, Tc, rf, max_iters, system=star, modified=Fals
             elif ((np.min(np.abs(fs)) < 0.5) or (np.abs(fs[-1]) < 0.5) ) and n > 100:
                 print("f is smaller than threshold for 100 iters")
                 break
-            elif len(fs) > 5 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-4 and np.abs(fs[-1])<1 and n>50:
+            elif len(fs) > 5 and np.min(np.abs(fs[-1] - np.array(fs[-5:-1]))) < 1e-4 and np.abs(fs[-1])<1 and n>50:
                 print("f is small and fs are similar")
                 break
-            elif len(rhos) > 5 and np.min(np.abs(rhos[-1] - np.array(rhos[-3:]))) < 1e-10 and np.min(np.abs(fs[-1] - np.array(fs[-3:]))) < 1e-10 and n>20:
+            elif len(rhos) > 5 and np.min(np.abs(rhos[-1] - np.array(rhos[-5:-1]))) < 1e-10 and np.min(np.abs(fs[-1] - np.array(fs[-5:-1]))) < 1e-10 and n>20:
                 print("Rho doesnt change, f changes little, f is small")
                 break
             elif n>200 and np.min(np.abs(fs)) < 1:
                 print("Over 200 and err <1")
                 break
-            elif n > 100:
+            elif n > 60:
                 break
 
             print("Curr min error: ", np.min(np.abs(fs)))
@@ -544,6 +544,23 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0, modified=False):
         os.mkdir("{}".format(n))
     except: # folder already exists
         pass
+
+    epp = eps_pp(rhos, Ts) * 4 * np.pi * rs * rs * rhos
+    ecno = eps_cno(rhos, Ts)* 4 * np.pi * rs * rs * rhos
+    ep = epsilon(rhos, Ts)* 4 * np.pi * rs * rs * rhos
+    plt.plot(rs / rs[surf], ep, "b-", label="Total")
+    plt.plot(rs / rs[surf], ecno, "g--", label="CNO")
+    plt.plot(rs/rs[surf], epp, "r:", label="Proton-Proton")
+    plt.xlabel(r"$R/R_{surf}$")
+    plt.ylabel("Energy Production")
+    plt.title("A Plot of Energy Production Throughout the Star")
+    plt.grid()
+    plt.legend()
+    plt.xlim(0,1)
+
+    plt.savefig("{0}/energy_{0}.png".format(n), dpi=300)
+    plt.clf()
+    plt.close()
 
     # This is the fancy plot with a lot of lines
     plt.plot(rs/rs[surf], rhos/rhos[0], label=r"$\rho/\rho_c$")
@@ -668,7 +685,7 @@ def mainsequence(qq, modified=False, system=star):
     LLs=[]; MMs=[]; TTs=[]; RRs =[]; fs = []; corr_TTs=[]
     rho_cs = []
     start = dt.datetime.now()
-    for i,T_c in   enumerate(np.linspace(1.5e6, 35e6, 20)): # enumerate([8.23e6]): # brodericks star
+    for i,T_c in enumerate([1e6, 25e6]):  # enumerate(np.linspace(1.5e6, 35e6, 20)): # enumerate([8.23e6]): # brodericks star
         print("==================== Beginning the {}th Star, Tc: {} ====================".format(i, T_c))
         r_f = 20*Rsun # starter radius of integration, almost always gets increased automatically
 
@@ -732,12 +749,12 @@ def mainsequence(qq, modified=False, system=star):
         fig = plt.figure()
         ax = plt.gca()
         plt.plot(np.array(TTs), np.array(LLs) / Lsun, 'b-o', label="Generated")
-        plt.plot(5760, 1, "+", label="Sun")
         if not modified:
             plt.plot(np.array(corr_TTs), np.array(LLs)/Lsun, "g--.", label="Corrected")
         else:
             if not fail:
                plt.plot(np.array(TTs) + (loaded['corr_temps'] - loaded['og_temps'])[:len(TTs)], np.array(LLs)[:len(TTs)] / Lsun, "g--.", label="Corrected")
+        plt.plot(5760, 1, marker="+", color="orange", label="Sun")
         ax.set_yscale('log')
         ax.set_xscale('log')
         plt.xlim(6e2, 5e4)
@@ -757,8 +774,11 @@ def mainsequence(qq, modified=False, system=star):
 
     print("Overall Took: ", (end - start).seconds)
 
-    if not modified and qq == "Real":
-        np.savez("corrections.npz", og_temps=np.array(TTs), corr_temps=np.array(corr_TTs)  )
+    if not modified:
+        if qq == "Real":
+            np.savez("corrections.npz", og_temps=np.array(TTs), corr_temps=np.array(corr_TTs)  )
+        else:
+            np.savez("corrections_{}.npz".format(qq), og_temps=np.array(TTs), corr_temps=np.array(corr_TTs) )
 
 
     epochs = np.arange(0, len(fs), 1)
@@ -823,7 +843,7 @@ if __name__ == "__main__":
     # cProfile.run('trial_soln(300, 8.23e6, 1e10, system=star, optimize=False, modified=False)')
 
     # Unmodified Main Sequence
-    # mainsequence("Real", modified=False)
+    mainsequence("Real", modified=False)
 
     # Modifications:
     Ti = 2e6
