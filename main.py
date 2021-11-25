@@ -1,3 +1,6 @@
+# This code used to be split across a couple files, one containing constants, another containing functions, etc
+# In the course of troubleshooting it, and in the interest of using numba to speed it up, it had to be compiled into a single mega-file
+
 import numpy as np
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
@@ -7,11 +10,12 @@ from numba import jit
 import datetime as dt
 import os
 
+# Verbosity of outputs while running
 verbosity = 1
 if verbosity < 2:
     warnings.filterwarnings("ignore") # IF THE CODE IS BROKEN, COMMENT THIS LINE OUT AND RUN IT AGAIN
 
-# Constants!
+# Constants! Defined more clearly in accompanying report
 # star composition
 X = 0.734
 Y = 0.25
@@ -108,37 +112,20 @@ def kappa_H(rho, T):
 
 @jit
 def kappa(rho, T):
-    # if isinstance(T, np.ndarray) or isinstance(T, list):
-    #     out = np.zeros(len(T))
-    #     for i in range(out.shape[0]):
-    #         if(T[i]>1e4):
-    #             out[i] =1/(1/kappa_H(rho[i], T[i]) + 1/np.nanmax([kappa_es, kappa_ff(rho[i],T[i])], axis=0) )
-    #         else:
-    #             out[i] = 1 / (1 / kappa_H(rho[i], T[i]) + 1 / np.nanmin([kappa_es, kappa_ff(rho[i], T[i])],axis=0))
-    #     return out
-    # else:
-    #     if(T>1e4):
-    #         try:
-    #             return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
-    #         except AttributeError:
-    #             return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
-    #     else:
-    #         try:
-    #             return 1/(1/kappa_H(rho, T) + 1/np.nanmin([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
-    #         except AttributeError:
-    #             return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmin([kappa_es, kappa_ff(rho, T)], axis=0))
+    # slightly different treatment needed for array vs single inputs
     if isinstance(rho, np.ndarray):
         return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T)], axis=0) )
     else:
         return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
 
-# these ones are our group specific
+# these ones are our group specific: we had to explore changes made to opacity
 # The specific Ti and kappa_0 are set below
 @jit
 def kappa_i(rho, T):
     global Ti
     global kappa_0
 
+    # this function caused lots of problems, this is not the most clever way to write it
     if isinstance(T, np.ndarray) or isinstance(T, list):
         out = np.zeros(len(T))
         for i in range(out.shape[0]):
@@ -154,32 +141,13 @@ def kappa_i(rho, T):
 
 @jit
 def kappa_modified(rho, T):
-    # if isinstance(T, np.ndarray) or isinstance(T, list):
-    #     out = np.zeros(len(T))
-    #     for i in range(out.shape[0]):
-    #         if(T[i]>1e4):
-    #             out[i] =1/(1/kappa_H(rho[i], T[i]) + 1/np.nanmax([kappa_es, kappa_ff(rho[i],T[i]), kappa_i(rho[i], T[i])], axis=0) )
-    #         else:
-    #             out[i] = 1 / (1 / kappa_H(rho[i], T[i]) + 1 / np.nanmin([kappa_es, kappa_ff(rho[i], T[i]), kappa_i(rho[i], T[i])],axis=0))
-    #     return out
-    # else:
-    #     if(T>1e4):
-    #         try:
-    #             return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T),kappa_i(rho, T)], axis=0) )
-    #         except AttributeError:
-    #             return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T)], axis=0))
-    #     else:
-    #         try:
-    #             return 1/(1/kappa_H(rho, T) + 1/np.nanmin([kappa_es*np.ones(rho.shape), kappa_ff(rho,T),kappa_i(rho, T)], axis=0) )
-    #         except AttributeError:
-    #             return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmin([kappa_es, kappa_ff(rho, T),kappa_i(rho, T)], axis=0))
-
+    # slightly different treatment needed for array vs single inputs
     if isinstance(rho, np.ndarray):
         return 1/(1/kappa_H(rho, T) + 1/np.nanmax([kappa_es*np.ones(rho.shape), kappa_ff(rho,T),kappa_i(rho, T)], axis=0) )
     else:
         return 1 / (1 / kappa_H(rho, T) + 1 / np.nanmax([kappa_es, kappa_ff(rho, T),kappa_i(rho, T)], axis=0))
 
-@jit
+@jit # Modified star system, to be fed to the RK integrator as a system of DEs
 def star_modified(r,y):
     rho = y[0]
     T = y[1]
@@ -217,7 +185,7 @@ def star(r,y):
 
     return np.array([rhodot, Tdot, Mdot, Ldot, taudot])
 
-@jit
+@jit # did the integration go far enough? (defined by when dtau is small "enough")
 def dtausmall(all, rs1, modified=False, ret=False):
     # Variable renaming
     rhos1 = all[0]
@@ -225,7 +193,6 @@ def dtausmall(all, rs1, modified=False, ret=False):
     Ms1 = all[2]
     Ls1 = all[3]
     taus1 = all[4]
-    # rs1 = all[5]
 
     # Using our modification
     if not modified:
@@ -248,6 +215,7 @@ def dtausmall(all, rs1, modified=False, ret=False):
 def rk45_step(stepsize, system, t, ys, T_c, tol=1e-4):
 
     # This numerically approximates derivatives (I think?)
+    # Mostly borrowed from a paper outlining RK45
     ys = np.array(ys)
     k1 = stepsize* system(t, ys)
     k2 = stepsize* system(t + (1/4)*stepsize, ys+ (1/4)*k1)
@@ -281,7 +249,7 @@ def rk45_step(stepsize, system, t, ys, T_c, tol=1e-4):
 
     return (next_step, next_4)
 
-@jit
+@jit # Solve the system for some set of parameters (used in bisection)
 def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, modified=False):
 
     count = 0 # Counter variable
@@ -296,6 +264,7 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, m
     else:
         tau_c = kappa_modified(rho_c_trial, T_c) * rho_c_trial
 
+    # I keep around everything
     all = [[rho_c_trial], [T_c], [M_c], [L_c], [tau_c], [r_c]]
     next = [rho_c_trial, T_c, M_c, L_c, tau_c, r_c]
     r = r_c
@@ -349,7 +318,7 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, m
 
     tauinf = taus1[tauinf_i]
     surf_g1 = surf_i1
-    rsurf_1 = rs1[surf_g1]
+    rsurf_1 = rs1[surf_g1] # one way to find the surface, usually inaccurate
 
     # interpolation of varaibles (to get good answers with bad stepsizes)
     tau = interp1d(rs1, taus1, kind="cubic", fill_value="extrapolate")
@@ -358,10 +327,10 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, m
     T = interp1d(rs1, Ts1, kind="cubic", fill_value="extrapolate")
     M = interp1d(rs1, Ms1, kind="cubic", fill_value="extrapolate")
     L = interp1d(rs1, Ls1, kind="cubic", fill_value="extrapolate")
-    #
-    rsurf_2 = tt(2./3.)
 
-    # ALTERNATIVE SURFACE DETERMINATION (NOT USED)
+    rsurf_2 = tt(2./3.) # second way to find the surface, usually much better
+
+    # ALTERNATIVE SURFACE DETERMINATION (NOT USED, did not provide better results)
     # rsurf_3 = minimize(lambda x: np.abs(tauinf - tau(x) -2./3.), rs1[surf_i1], bounds=[(0,rs1[tauinf_i])]  )
     # # print( taus1[tauinf_i] - tau(rsurf.x[0]) -2/3)
     # rsurf_3 = rsurf_3.x[0]
@@ -401,7 +370,7 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, m
     # error4 = frac_error4
     # error5 = frac_error5
 
-    # Automagic surface determination based on error min (worked like ass and caused really bad jumping around)
+    # Automagic surface determination based on error min (worked poorly and caused really bad jumping around)
     # min_method = np.argmin([error1, error2, error3, error4, error5])
     rsurf = rsurf_2 #eval("rsurf_{}".format(min_method+1)) #rs1[surf_g1] #rsurf_4 #(rsurf + rs1[surf_g1])/2
 
@@ -452,12 +421,13 @@ def trial_soln(rho_c_trial, T_c, r_f, system=star, optimize=True, final=False, m
         print("Err in tau(surf): ", np.abs(tauinf - taus1[-1] - 2./3.))
         print(" ")
 
+    # if we're optimizing, only care about the error, else we want the full solution
     if not optimize:
         return np.array([rs1, rhos1, Ts1, Ms1, Ls1, taus1, surf_i1, frac_error1])
     else:
         return frac_error1
 
-@jit
+@jit # this function runs the trial_solution in order to find ICs that satisfy a relationship with the BCs
 def find_ics(rho_c_min, rho_c_max, Tc, rf, max_iters, system=star, modified=False):
 
     # beginning points
@@ -476,9 +446,10 @@ def find_ics(rho_c_min, rho_c_max, Tc, rf, max_iters, system=star, modified=Fals
 
     print("Initial error bounds: {} {}".format(f1, f2))
 
+    # Bisection method
     if f1*f2 > 0: # root not in interval defined by [rho_c_min, rho_c_max]
         print("Pick better bounds, one needs to be negative")
-        raise ValueError # used to auto adjust bounds later
+        raise ValueError # used to auto adjust bounds later to save work
     else:
         for n in range(max_iters):
             intcount = 0
@@ -498,6 +469,9 @@ def find_ics(rho_c_min, rho_c_max, Tc, rf, max_iters, system=star, modified=Fals
                 f1 = f3
 
             # Adjusted criteria based on how long its taking
+            # essentially, if the error is good enough or not changing enough we stop
+            # or, if the quantity optimizing over isn't changing, then we might as well stop
+            # we are not guaranteed that a solution exists
             if (np.min(np.abs(fs)) < 3e-5): # end condition
                 break
             elif ((np.min(np.abs(fs)) < 1e-4) or (np.abs(fs[-1]) < 1e-4) )  and n > 20:
@@ -545,6 +519,7 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0, modified=False):
     except: # folder already exists
         pass
 
+    # calculate and plot various useful quantities
     epp = eps_pp(rhos, Ts) * 4 * np.pi * rs * rs * rhos
     ecno = eps_cno(rhos, Ts)* 4 * np.pi * rs * rs * rhos
     ep = epsilon(rhos, Ts)* 4 * np.pi * rs * rs * rhos
@@ -678,6 +653,7 @@ def plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, f, n=0, modified=False):
     plt.clf()
     plt.close()
 
+# This generates a Hertzprung Russel Diagram via simulating n stars
 def mainsequence(qq, modified=False, system=star):
 
     global r_f, T_c
@@ -723,18 +699,20 @@ def mainsequence(qq, modified=False, system=star):
                 continue # Just continue going if it fails all 4
 
 
-
+        # done generating the ith star, might as well plot everything
         end = dt.datetime.now()
-        rs, rhos, Ts, Ms, Ls, taus, surf, ff = rho_c_true #trial_soln(rho_c_true, T_c, r_f, optimize=False, final=True)
+        rs, rhos, Ts, Ms, Ls, taus, surf, ff = rho_c_true
         print(ff)
         plot_all(rs, rhos, Ts, Ms, Ls, taus, surf, ff, n="MainSeq{}_{}".format(qq,i), modified=modified)
 
+        # keep around some data for plotting HR
         LLs.append(Ls[surf])
         MMs.append(Ms[surf])
         RRs.append(rs[surf])
         TTs.append(Ts[surf])
         fs.append(ff)
 
+        # We do some rudimentary correction for where the surface is, since detection is SUPER inaccurate
         if not modified:
             tsurf_expected = (Ls[surf] / (4. * np.pi * (rs[surf] ** 2) * sb)) ** (1. / 4.)
             corr_TTs.append(tsurf_expected)
@@ -746,6 +724,7 @@ def mainsequence(qq, modified=False, system=star):
             except:
                 fail = True
 
+        # Plots the HR as it runs so we can examine progress
         fig = plt.figure()
         ax = plt.gca()
         plt.plot(np.array(TTs), np.array(LLs) / Lsun, 'b-o', label="Generated")
@@ -781,6 +760,7 @@ def mainsequence(qq, modified=False, system=star):
             np.savez("corrections_{}.npz".format(qq), og_temps=np.array(TTs), corr_temps=np.array(corr_TTs) )
 
 
+    # Basic error plot
     epochs = np.arange(0, len(fs), 1)
     plt.plot(epochs, fs)
     plt.ylabel("Error")
@@ -788,6 +768,7 @@ def mainsequence(qq, modified=False, system=star):
     plt.clf()
     plt.close()
 
+    # Mass Luminosity over the main sequence
     plt.plot(np.array(MMs)/Msun, np.array(LLs)/Lsun, "b-o", label="Calculated")
     emp_Ms = np.linspace(np.nanmin(MMs), np.nanmax(MMs), 1000)
     emp_Ls = []
@@ -810,6 +791,7 @@ def mainsequence(qq, modified=False, system=star):
     plt.clf()
     plt.close()
 
+    # Mass Radius over the main sequence
     plt.plot(np.array(MMs)/Msun, np.array(RRs)/Rsun, "b-o", label="Calculated")
     emp_Rs = []
     for M in emp_Ms:
@@ -833,7 +815,7 @@ def mainsequence(qq, modified=False, system=star):
 
 # Uncomment the one you want
 # I run them in parallel because it doesnt take a ton of resources on my pc
-# Make sure the unmodified main sequence finishes first though! (I put the corrections on git so this is only if you dick around with the params too much)
+# Make sure the unmodified main sequence finishes first though! (I put the corrections on git so this is only if you mess around with the params too much)
 if __name__ == "__main__":
     global Ti
     global kappa_0
